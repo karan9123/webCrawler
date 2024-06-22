@@ -1,0 +1,5 @@
+/venv
+/robot_cache
+output.txt
+requirements.txt
+unallowed_links.json
