@@ -119,10 +119,21 @@ class Scraper:
             self.save_unallowed_links()
 
     def load_unallowed_links(self):
-        if os.path.exists(self.unallowed_links_file):
-            with open(self.unallowed_links_file, 'r') as f:
-                return json.load(f)
-        return []
+        try:
+            if os.path.exists(self.unallowed_links_file):
+                with open(self.unallowed_links_file, 'r') as f:
+                    content = f.read()
+                    if content.strip():  # Check if file is not empty
+                        return json.loads(content)
+                    else:
+                        print(f"Warning: {self.unallowed_links_file} is empty. Initializing with an empty list.")
+                        return []
+            else:
+                print(f"Warning: {self.unallowed_links_file} does not exist. Initializing with an empty list.")
+                return []
+        except json.JSONDecodeError as e:
+            print(f"Error decoding JSON from {self.unallowed_links_file}: {str(e)}. Initializing with an empty list.")
+            return []
 
     def save_unallowed_links(self):
         with open(self.unallowed_links_file, 'w') as f:
