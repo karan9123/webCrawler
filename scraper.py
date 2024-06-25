@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class Scraper:
-    def __init__(self, link_manager):
+    def __init__(self, link_manager, config_manager):
         """
         Initialize the AsyncScraper class.
 
@@ -40,14 +40,16 @@ class Scraper:
                 :param content_hash: The MD5 hash of the page content. If not provided, defaults to None.
                 :param last_modified: The last modified date of the page. If not provided, defaults to None.
         """
+        self.config = config_manager
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
+            'User-Agent': self.config.get('scraper.headers.user_agent'),
+            'Accept': self.config.get('scraper.headers.accept'),
+            'Accept-Language': self.config.get('scraper.headers.accept_language'),
+            'Accept-Encoding': self.config.get('scraper.headers.accept_encoding'),
+            'Connection': self.config.get('scraper.headers.connection'),
+            'Upgrade-Insecure-Requests': self.config.get('scraper.headers.upgrade_insecure_requests'),
         }
+        
         # self.headers = {
         #     'User-Agent': 'YourBot/1.0 (+http://www.yourwebsite.com/bot.html)',
         #     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -277,6 +279,9 @@ class Scraper:
         :param max_pages: The maximum number of pages to crawl.
         :return: A set of visited URLs.
         """
+        if max_pages is None:
+            max_pages = self.config.get('scraper.max_pages')
+            
         visited = set()
         to_visit = asyncio.Queue()
         await to_visit.put(start_url)

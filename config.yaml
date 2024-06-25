@@ -1,0 +1,17 @@
+# config.yaml
+neo4j:
+  uri: "bolt://localhost:7687"
+  user: "neo4j"
+  password: "password"
+  database: "crawler"
+
+scraper:
+  headers:
+  # user_agent: "MyBot/1.0 (+http://www.xyz.com/bot.html)"
+    user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36"
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+    accept_language: "en-US,en;q=0.5"
+    accept_encoding: "gzip, deflate, br"
+    connection: "keep-alive"
+    upgrade_insecure_requests: "1"
+  max_pages: 100

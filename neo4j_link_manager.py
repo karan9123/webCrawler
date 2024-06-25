@@ -1,4 +1,5 @@
 from neo4j import GraphDatabase
+from config_manager import ConfigManager
 from urllib.parse import urlparse
 from datetime import datetime
 import logging
@@ -7,17 +8,17 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class LinkManager:
-    def __init__(self, uri="bolt://localhost:7687", user="neo4j", password="password", database="crawler"):
+    def __init__(self, config_manager):
         """
-        Initializes an EnhancedLinkManager instance.
-
-        :param uri: The URI of the Neo4j database. Defaults to "bolt://localhost:7687".
-        :param user: The username for the Neo4j database. Defaults to "neo4j".
-        :param password: The password for the Neo4j database.
-        :param database: The name of the Neo4j database to use. Defaults to "crawler".
+        Initializes the LinkManager instance.
         """
+        self.config = config_manager
+        uri = self.config.get('neo4j.uri')
+        user = self.config.get('neo4j.user')
+        password = self.config.get('neo4j.password')
+        database = self.config.get('neo4j.database')
+        
         self.driver = GraphDatabase.driver(uri, auth=(user, password), database=database)
-
     def close(self):
         """
         Closes the Neo4j driver connection.
