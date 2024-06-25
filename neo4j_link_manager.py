@@ -1,17 +1,22 @@
 from neo4j import GraphDatabase
 from urllib.parse import urlparse
 from datetime import datetime
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 class LinkManager:
     def __init__(self, uri="bolt://localhost:7687", user="neo4j", password="password", database="crawler"):
         """
-        Initializes a Neo4jLinkManager instance.
+        Initializes an EnhancedLinkManager instance.
 
         :param uri: The URI of the Neo4j database. Defaults to "bolt://localhost:7687".
         :param user: The username for the Neo4j database. Defaults to "neo4j".
         :param password: The password for the Neo4j database.
+        :param database: The name of the Neo4j database to use. Defaults to "crawler".
         """
-        self.driver = GraphDatabase.driver(uri, auth=(user, password))
+        self.driver = GraphDatabase.driver(uri, auth=(user, password), database=database)
 
     def close(self):
         """
@@ -19,29 +24,32 @@ class LinkManager:
         """
         self.driver.close()
 
-    def add_link(self, url, parent_url=None):
+    def add_or_update_link(self, url, parent_url=None, content_hash=None, last_modified=None):
         """
-        Adds a new link to the database, or updates an existing link with new information.
+        Adds a new link to the database or updates an existing link with new information.
 
         :param url: The URL of the link to be added or updated.
         :param parent_url: The URL of the parent link. If not provided, defaults to None.
+        :param content_hash: The MD5 hash of the page content. If not provided, defaults to None.
+        :param last_modified: The last modified date of the page. If not provided, defaults to None.
         """
         domain = urlparse(url).netloc
         with self.driver.session() as session:
-            session.execute_write(self._create_or_update_link, url, domain, parent_url)
+            session.execute_write(self._create_or_update_link, url, domain, parent_url, content_hash, last_modified)
 
     @staticmethod
-    def _create_or_update_link(tx, url, domain, parent_url):
-        # Create or update the link
+    def _create_or_update_link(tx, url, domain, parent_url, content_hash, last_modified):
         query = (
             "MERGE (l:Link {url: $url}) "
-            "SET l.domain = $domain, l.lastChecked = datetime() "
+            "SET l.domain = $domain, "
+            "l.lastChecked = datetime(), "
+            "l.contentHash = $content_hash, "
+            "l.lastModified = $last_modified "
             "RETURN l"
         )
-        result = tx.run(query, url=url, domain=domain)
+        result = tx.run(query, url=url, domain=domain, content_hash=content_hash, last_modified=last_modified)
         link = result.single()['l']
 
-        # If parent_url is provided, create the relationship
         if parent_url:
             query = (
                 "MATCH (l:Link {url: $url}) "
@@ -51,6 +59,70 @@ class LinkManager:
             tx.run(query, url=url, parent_url=parent_url)
 
         return link
+
+    def get_last_crawl_info(self, url):
+        """
+        Retrieves the last crawl information for a given URL.
+
+        :param url: The URL to check.
+        :return: A dictionary containing last_checked and last_modified dates, or None if not found.
+        """
+        with self.driver.session() as session:
+            return session.execute_read(self._get_last_crawl_info, url)
+
+    @staticmethod
+    def _get_last_crawl_info(tx, url):
+        query = (
+            "MATCH (l:Link {url: $url}) "
+            "RETURN l.lastChecked AS last_checked, l.lastModified AS last_modified"
+        )
+        result = tx.run(query, url=url)
+        record = result.single()
+        if record:
+            return {
+                'last_checked': record['last_checked'],
+                'last_modified': record['last_modified']
+            }
+        return None
+
+    def content_exists(self, content_hash):
+        """
+        Checks if content with the given hash already exists in the database.
+
+        :param content_hash: The MD5 hash of the page content.
+        :return: True if content exists, False otherwise.
+        """
+        with self.driver.session() as session:
+            return session.execute_read(self._content_exists, content_hash)
+
+    @staticmethod
+    def _content_exists(tx, content_hash):
+        query = (
+            "MATCH (l:Link {contentHash: $content_hash}) "
+            "RETURN count(l) > 0 AS exists"
+        )
+        result = tx.run(query, content_hash=content_hash)
+        return result.single()['exists']
+
+    def get_links_to_crawl(self, time_threshold):
+        """
+        Retrieves links that haven't been checked since the given time threshold.
+
+        :param time_threshold: A datetime object representing the threshold.
+        :return: A list of URLs that need to be checked.
+        """
+        with self.driver.session() as session:
+            return session.execute_read(self._get_links_to_crawl, time_threshold)
+
+    @staticmethod
+    def _get_links_to_crawl(tx, time_threshold):
+        query = (
+            "MATCH (l:Link) "
+            "WHERE l.lastChecked < datetime($threshold) OR l.lastChecked IS NULL "
+            "RETURN l.url"
+        )
+        result = tx.run(query, threshold=time_threshold.isoformat())
+        return [record["l.url"] for record in result]
 
     def remove_link(self, url):
         """
@@ -121,7 +193,7 @@ class LinkManager:
         :return: A list of URLs associated with the given domain.
         """
         with self.driver.session() as session:
-            return session.read_transaction(self._get_links_by_domain, domain)
+            return session.execute_read(self._get_links_by_domain, domain)
 
     @staticmethod
     def _get_links_by_domain(tx, domain):
@@ -212,12 +284,15 @@ class LinkManager:
 
 def test_main():
     lm = LinkManager()
-    print('Testing Neo4j')
-    # lm.add_link('https://www.imdb.com/title/tt0111161/')
-    # # print(lm.delete_links_by_domain('www.imdb.com'))
-    k = lm.get_urls(100)
-    for urls in k:
-        print(urls)
+    print('Testing Neo4j Enhanced Link Manager')
+    urls = lm.get_urls(1000)
+    for url in urls:
+        print(url)
+    # Add your test cases here
+
+    urls = lm.get_links_by_domain("www.imdb.com")
+    for url in urls:
+        print(url)
     lm.close()
 
 if __name__ == '__main__':

@@ -1,32 +1,31 @@
-import requests
+import json
+import asyncio
+import aiohttp
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import os
 from urllib.robotparser import RobotFileParser
-from datetime import datetime, timedelta
-import json
 import time
 import random
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import logging
+import hashlib
+from ratelimit import limits, sleep_and_retry
+import importlib
+from tenacity import retry, stop_after_attempt, wait_exponential
+from neo4j.time import DateTime
+from datetime import datetime, timedelta, timezone
 
-class Scraper:
-    def __init__(self):
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+class AsyncScraper:
+    def __init__(self, link_manager):
         """
-        Initialize the Scraper class.
+        Initialize the AsyncScraper class.
 
-        Attributes:
-        headers (dict): Dictionary containing HTTP headers for requests.
-        robot_cache_dir (str): Directory path to store robots.txt cache files.
-        unallowed_links_file (str): File name to store unallowed links.
-        unallowed_links (list): List of unallowed links.
-        robot_parsers (dict): Dictionary to store RobotFileParser objects.
-        session (requests.Session): Session object for making HTTP requests.
-
-        Returns:
-        None
+        :param link_manager: An instance of EnhancedLinkManager for managing links in the database.
         """
-
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -47,137 +46,286 @@ class Scraper:
         self.unallowed_links_file = 'unallowed_links.json'
         self.unallowed_links = self.load_unallowed_links()
         self.robot_parsers = {}
-        self.session = self.create_session()
+        self.link_manager = link_manager
+        self.parser_manager = ContentParserManager()
 
         if not os.path.exists(self.robot_cache_dir):
             os.makedirs(self.robot_cache_dir)
 
-    def create_session(self):
-        session = requests.Session()
-        retries = Retry(total=5, backoff_factor=0.1, status_forcelist=[500, 502, 503, 504])
-        adapter = HTTPAdapter(max_retries=retries)
-        session.mount('http://', adapter)
-        session.mount('https://', adapter)
-        return session
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    @sleep_and_retry
+    @limits(calls=1, period=5)  # 1 request per 5 seconds
+    async def scrape_website(self, url):
+        """
+        Asynchronously scrape a website.
 
-    def scrape_website(self, url):
+        :param url: The URL to scrape.
+        :return: A BeautifulSoup object of the scraped content, or None if an error occurred.
+        """
         try:
-            response = self.session.get(url, headers=self.headers, timeout=10)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.content, 'html.parser')
-            return soup
-        except requests.RequestException as e:
-            print(f"Error scraping {url}: {str(e)}")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self.headers, timeout=10) as response:
+                    response.raise_for_status()
+                    content = await response.text()
+                    return BeautifulSoup(content, 'html.parser')
+        except aiohttp.ClientError as e:
+            logger.error(f"Error scraping {url}: {str(e)}")
             return None
 
-    def is_allowed(self, url):
+    async def is_allowed(self, url):
+        """
+        Check if scraping a URL is allowed by the website's robots.txt file.
+
+        :param url: The URL to check.
+        :return: True if scraping is allowed, False otherwise.
+        """
         parsed_url = urlparse(url)
         domain = parsed_url.netloc
         
         if domain not in self.robot_parsers:
-            self.load_robot_parser(domain)
+            await self.load_robot_parser(domain)
 
         is_allowed = self.robot_parsers[domain].can_fetch(self.headers['User-Agent'], url)
 
         if not is_allowed:
             self.add_unallowed_link(url)
-
         return is_allowed
 
-    def load_robot_parser(self, domain):
+    async def load_robot_parser(self, domain):
+        """
+        Load the robots.txt file for a given domain and create a RobotFileParser object.
+
+        :param domain: The domain to load the robots.txt file for.
+        """
         robot_file_path = os.path.join(self.robot_cache_dir, f"{domain}_robots.txt")
 
         if not os.path.exists(robot_file_path) or self.is_file_outdated(robot_file_path):
-            self.update_robot_file(domain, robot_file_path)
+            await self.update_robot_file(domain, robot_file_path)
 
         rp = RobotFileParser()
         rp.parse(self.read_robot_file(robot_file_path))
         self.robot_parsers[domain] = rp
 
     def is_file_outdated(self, file_path):
+        """
+        Check if a file is older than 7 days.
+
+        :param file_path: The path to the file to check.
+        :return: True if the file is outdated, False otherwise.
+        """
         return datetime.now() - datetime.fromtimestamp(os.path.getmtime(file_path)) > timedelta(days=7)
 
-    def update_robot_file(self, domain, file_path):
+    async def update_robot_file(self, domain, file_path):
+        """
+        Update the robots.txt file for a given domain.
+
+        :param domain: The domain to update the robots.txt file for.
+        :param file_path: The path to save the robots.txt file.
+        """
         robot_url = f"https://{domain}/robots.txt"
         try:
-            response = self.session.get(robot_url, headers=self.headers, timeout=10)
-            response.raise_for_status()
-            
-            with open(file_path, 'w') as f:
-                f.write(response.text)
-        except requests.RequestException as e:
-            print(f"Error fetching robots.txt for {domain}: {str(e)}")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(robot_url, headers=self.headers, timeout=10) as response:
+                    response.raise_for_status()
+                    content = await response.text()
+                    
+                    with open(file_path, 'w') as f:
+                        f.write(content)
+        except aiohttp.ClientError as e:
+            logger.error(f"Error fetching robots.txt for {domain}: {str(e)}")
             open(file_path, 'w').close()
 
     def read_robot_file(self, file_path):
+        """
+        Read the contents of a robots.txt file.
+
+        :param file_path: The path to the robots.txt file.
+        :return: A list of lines from the robots.txt file.
+        """
         with open(file_path, 'r') as f:
             return f.read().splitlines()
 
     def add_unallowed_link(self, url):
+        """
+        Add a URL to the list of unallowed links.
+
+        :param url: The URL to add to the unallowed links list.
+        """
         if url not in self.unallowed_links:
             self.unallowed_links.append(url)
             self.save_unallowed_links()
 
     def load_unallowed_links(self):
+        """
+        Load the list of unallowed links from a file.
+
+        :return: A list of unallowed links.
+        """
         try:
             if os.path.exists(self.unallowed_links_file):
                 with open(self.unallowed_links_file, 'r') as f:
                     content = f.read()
-                    if content.strip():  # Check if file is not empty
+                    if content.strip():
                         return json.loads(content)
                     else:
-                        print(f"Warning: {self.unallowed_links_file} is empty. Initializing with an empty list.")
+                        logger.warning(f"{self.unallowed_links_file} is empty. Initializing with an empty list.")
                         return []
             else:
-                print(f"Warning: {self.unallowed_links_file} does not exist. Initializing with an empty list.")
+                logger.warning(f"{self.unallowed_links_file} does not exist. Initializing with an empty list.")
                 return []
         except json.JSONDecodeError as e:
-            print(f"Error decoding JSON from {self.unallowed_links_file}: {str(e)}. Initializing with an empty list.")
+            logger.error(f"Error decoding JSON from {self.unallowed_links_file}: {str(e)}. Initializing with an empty list.")
             return []
 
     def save_unallowed_links(self):
+        """
+        Save the list of unallowed links to a file.
+        """
         with open(self.unallowed_links_file, 'w') as f:
             json.dump(self.unallowed_links, f)
 
-    def discover_links(self, url):
-        soup = self.scrape_website(url)
-        if not soup:
-            return [], [], []
+    async def discover_links(self, url, soup):
+        """
+        Discover internal, external, and resource links from a BeautifulSoup object.
+
+        :param url: The URL of the page being scraped.
+        :param soup: A BeautifulSoup object of the scraped content.
+        :return: Three lists containing internal, external, and resource links.
+        """
         internal_links = set()
         external_links = set()
         resource_links = set()
         base_domain = urlparse(url).netloc
+
         for link in soup.find_all('a', href=True):
             href = link['href']
             full_url = urljoin(url, href)
             parsed_url = urlparse(full_url)
             
             if parsed_url.netloc == base_domain:
-                if self.is_allowed(full_url):
+                if await self.is_allowed(full_url):
                     internal_links.add(full_url)
             elif parsed_url.scheme in ['http', 'https']:
                 external_links.add(full_url)
+
         for tag in soup.find_all(['img', 'script', 'link']):
             src = tag.get('src') or tag.get('href')
             if src:
                 full_url = urljoin(url, src)
                 resource_links.add(full_url)
         
-        # Implement rate limiting
-        time.sleep(random.uniform(1, 3))
-        
         return list(internal_links), list(external_links), list(resource_links)
 
-    def crawl(self, start_url, max_pages=100):
+    def get_content_hash(self, content):
+        """
+        Calculate the MD5 hash of the given content.
+
+        :param content: The content to hash.
+        :return: The MD5 hash of the content.
+        """
+        return hashlib.md5(content.encode()).hexdigest()
+
+    async def should_crawl(self, url):
+        """
+        Determine if a URL should be crawled based on its last crawl information.
+
+        :param url: The URL to check.
+        :return: True if the URL should be crawled, False otherwise.
+        """
+        last_crawl_info = self.link_manager.get_last_crawl_info(url)
+        if not last_crawl_info:
+            return True
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.head(url, headers=self.headers) as response:
+                headers = response.headers
+                if 'Last-Modified' in headers:
+                    last_modified = datetime.strptime(headers['Last-Modified'], '%a, %d %b %Y %H:%M:%S GMT')
+                    return last_modified > last_crawl_info['last_modified']
+        
+        last_checked = last_crawl_info['last_checked']
+        if isinstance(last_checked, DateTime):
+            last_checked = last_checked.to_native()
+        
+        if last_checked.tzinfo is not None:
+            last_checked = last_checked.replace(tzinfo=None)
+        
+        now = datetime.now()
+        flag = now - last_checked > timedelta(days=7)  
+        logger.info(f'made it here {flag}')
+        return flag
+
+    async def crawl(self, start_url, max_pages=100):
+        """
+        Asynchronously crawl websites starting from a given URL.
+
+        :param start_url: The URL to start crawling from.
+        :param max_pages: The maximum number of pages to crawl.
+        :return: A set of visited URLs.
+        """
         visited = set()
-        to_visit = [start_url]
-        
-        while to_visit and len(visited) < max_pages:
-            url = to_visit.pop(0)
-            if url not in visited and self.is_allowed(url):
-                print(f"Crawling: {url}")
-                internal, external, resources = self.discover_links(url)
-                visited.add(url)
-                to_visit.extend([link for link in internal if link not in visited])
-        
+        to_visit = asyncio.Queue()
+        await to_visit.put(start_url)
+
+        while not to_visit.empty() and len(visited) < max_pages:
+            url = await to_visit.get()
+            if url not in visited and await self.is_allowed(url) and await self.should_crawl(url):
+                logger.info(f"Crawling: {url}")
+                soup = await self.scrape_website(url)
+                if soup:
+                    content_hash = self.get_content_hash(str(soup))
+                    if not self.link_manager.content_exists(content_hash):
+                        self.link_manager.add_or_update_link(url, content_hash=content_hash, last_modified=datetime.now())
+                        internal, external, resources = await self.discover_links(url, soup)
+                        visited.add(url)
+                        for link in internal:
+                            print("00", link)
+                            if link not in visited:
+                                await to_visit.put(link)
+                        
+                        # Parse content using the parser manager
+                        parsed_data = self.parser_manager.parse_content("default", soup)
+                        # Here, we process the parsed_data as needed
+
         return visited
+
+class ContentParserManager:
+    def __init__(self):
+        self.parsers = {}
+
+    def load_parser(self, parser_name):
+        try:
+            module = importlib.import_module(f"parsers.{parser_name}")
+            parser_class = getattr(module, f"{parser_name.capitalize()}Parser")
+            self.parsers[parser_name] = parser_class()
+        except (ImportError, AttributeError) as e:
+            logger.error(f"Error loading parser {parser_name}: {str(e)}")
+            # Use DefaultParser as fallback
+            from parsers.default import DefaultParser
+            self.parsers[parser_name] = DefaultParser()
+
+    def parse_content(self, parser_name, content):
+        if parser_name not in self.parsers:
+            self.load_parser(parser_name)
+        return self.parsers[parser_name].parse(content)
+    
+
+async def main():
+    """
+    Main function to run the AsyncScraper.
+    """
+    from neo4j_link_manager import LinkManager
+
+    link_manager = LinkManager()
+    scraper = AsyncScraper(link_manager)
+    
+    start_url = "https://www.imdb.com"  # Replace with desired start URL
+    visited_urls = await scraper.crawl(start_url, max_pages=10)
+    logger.info(f"Crawled {len(visited_urls)} pages.")
+    # urls = link_manager.get_urls(1000)
+    # for url in urls:
+    #     print(url)
+    link_manager.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
