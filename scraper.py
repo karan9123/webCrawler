@@ -1,12 +1,11 @@
 import json
-import asyncio
 import aiohttp
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import os
 from urllib.robotparser import RobotFileParser
-import time
-import random
+# import time
+# import random
 import logging
 import hashlib
 from ratelimit import limits, sleep_and_retry
@@ -14,17 +13,32 @@ import importlib
 from tenacity import retry, stop_after_attempt, wait_exponential
 from neo4j.time import DateTime
 from datetime import datetime, timedelta, timezone
+import asyncio
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class AsyncScraper:
+
+
+class Scraper:
     def __init__(self, link_manager):
         """
         Initialize the AsyncScraper class.
 
-        :param link_manager: An instance of EnhancedLinkManager for managing links in the database.
+        :param link_manager: An instance of LinkManager for managing links in the database.
+        a link_manager should have definitions for :
+            get_last_crawl_info(url: string):
+                :param url: The URL to check.
+                :return: A dictionary containing last_checked and last_modified dates, or None if not found.
+            content_exists(content_hash):
+                :param content_hash: The MD5 hash of the page content.
+                :return: True if content exists, False otherwise.
+            add_or_update_link(url, parent_url, content_hash, lasst_modified):
+                :param url: The URL of the link to be added or updated.
+                :param parent_url: The URL of the parent link. If not provided, defaults to None.
+                :param content_hash: The MD5 hash of the page content. If not provided, defaults to None.
+                :param last_modified: The last modified date of the page. If not provided, defaults to None.
         """
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36',
@@ -309,23 +323,3 @@ class ContentParserManager:
             self.load_parser(parser_name)
         return self.parsers[parser_name].parse(content)
     
-
-async def main():
-    """
-    Main function to run the AsyncScraper.
-    """
-    from neo4j_link_manager import LinkManager
-
-    link_manager = LinkManager()
-    scraper = AsyncScraper(link_manager)
-    
-    start_url = "https://www.imdb.com"  # Replace with desired start URL
-    visited_urls = await scraper.crawl(start_url, max_pages=10)
-    logger.info(f"Crawled {len(visited_urls)} pages.")
-    # urls = link_manager.get_urls(1000)
-    # for url in urls:
-    #     print(url)
-    link_manager.close()
-
-if __name__ == "__main__":
-    asyncio.run(main())
