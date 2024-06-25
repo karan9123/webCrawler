@@ -1,5 +1,5 @@
-/robot_cache/*
+robot_cache/*
 output.txt
 requirements.txt
 unallowed_links.json
-__pycache__/*
+/__pycache__/*
