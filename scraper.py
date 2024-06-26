@@ -252,13 +252,21 @@ class Scraper:
         if not last_crawl_info:
             return True
         
-        async with aiohttp.ClientSession() as session:
-            async with session.head(url, headers=self.headers) as response:
-                headers = response.headers
-                if 'Last-Modified' in headers:
-                    last_modified = datetime.strptime(headers['Last-Modified'], '%a, %d %b %Y %H:%M:%S GMT')
-                    return last_modified > last_crawl_info['last_modified']
-        
+        # async with aiohttp.ClientSession() as session:
+        #     async with session.head(url, headers=self.headers) as response:
+        #         headers = response.headers
+        #         if 'Last-Modified' in headers:
+        #             last_modified = datetime.strptime(headers['Last-Modified'], '%a, %d %b %Y %H:%M:%S GMT')
+        #             lst_modified =last_crawl_info['last_modified']
+        #             if lst_modified is not None:
+        #                 return last_modified > last_crawl_info['last_modified']
+        #             else: 
+        #                 return True
+
+        if last_crawl_info['last_modified'] is None:
+            return True
+
+
         last_checked = last_crawl_info['last_checked']
         if isinstance(last_checked, DateTime):
             last_checked = last_checked.to_native()
@@ -268,7 +276,6 @@ class Scraper:
         
         now = datetime.now()
         flag = now - last_checked > timedelta(days=7)  
-        logger.info(f'made it here {flag}')
         return flag
 
     async def crawl(self, start_url, max_pages=100):
@@ -298,7 +305,8 @@ class Scraper:
                         internal, external, resources = await self.discover_links(url, soup)
                         visited.add(url)
                         for link in internal:
-                            print("00", link)
+                            print(f"{url}--->{link}")
+                            self.link_manager.add_or_update_link(link)
                             if link not in visited:
                                 await to_visit.put(link)
                         
