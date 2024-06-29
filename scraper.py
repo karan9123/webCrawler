@@ -14,6 +14,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from neo4j.time import DateTime
 from datetime import datetime, timedelta, timezone
 import asyncio
+from clean_text_parser import CleanTextParser
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -300,36 +301,42 @@ class Scraper:
                 soup = await self.scrape_website(url)
                 if soup:
                     content_hash = self.get_content_hash(str(soup))
+                    # parsed_data = self.parser_manager.parse_content("clean_text", soup)
+                    # print(parsed_data)
                     if not self.link_manager.content_exists(content_hash):
                         self.link_manager.add_or_update_link(url, content_hash=content_hash, last_modified=datetime.now())
                         internal, external, resources = await self.discover_links(url, soup)
                         visited.add(url)
                         for link in internal:
-                            print(f"{url}--->{link}")
+                            # print(f"{url}--->{link}")
                             self.link_manager.add_or_update_link(link)
                             if link not in visited:
                                 await to_visit.put(link)
                         
                         # Parse content using the parser manager
-                        parsed_data = self.parser_manager.parse_content("default", soup)
+                        parsed_data = self.parser_manager.parse_content("clean_text", soup)
+                        print(url,"------>",parsed_data,"<------")
                         # Here, we process the parsed_data as needed
 
         return visited
 
 class ContentParserManager:
     def __init__(self):
-        self.parsers = {}
+        self.parsers = {
+            # 'default': DefaultParser(),
+            'clean_text': CleanTextParser()
+        }
 
     def load_parser(self, parser_name):
-        try:
-            module = importlib.import_module(f"parsers.{parser_name}")
-            parser_class = getattr(module, f"{parser_name.capitalize()}Parser")
-            self.parsers[parser_name] = parser_class()
-        except (ImportError, AttributeError) as e:
-            logger.error(f"Error loading parser {parser_name}: {str(e)}")
-            # Use DefaultParser as fallback
-            from parsers.default import DefaultParser
-            self.parsers[parser_name] = DefaultParser()
+        if parser_name not in self.parsers:
+            try:
+                module = importlib.import_module(f"parsers.{parser_name}")
+                parser_class = getattr(module, f"{parser_name.capitalize()}Parser")
+                self.parsers[parser_name] = parser_class()
+            except (ImportError, AttributeError) as e:
+                logger.error(f"Error loading parser {parser_name}: {str(e)}")
+                # Use CleanTextParser as fallback
+                self.parsers[parser_name] = CleanTextParser()
 
     def parse_content(self, parser_name, content):
         if parser_name not in self.parsers:
