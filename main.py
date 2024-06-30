@@ -1,7 +1,7 @@
-from neo4j_link_manager import LinkManager
-from scraper import Scraper
+from database.link_manager import LinkManager
+from scraper.scraper import Scraper
 import asyncio
-from config_manager import ConfigManager
+from config.config_manager import ConfigManager
 
 
 async def main():
@@ -11,7 +11,7 @@ async def main():
 
     scraper = Scraper(link_manager, config_manager)
     start_url = "https://www.gutenberg.org"  # Replace with desired start URL
-    visited_urls = await scraper.crawl(start_url, max_pages=10)
+    visited_urls = await scraper.crawl(start_url, max_pages=2)
     print(f"Crawled {len(visited_urls)} pages.")
     
     # urls = link_manager.get_urls(1000)

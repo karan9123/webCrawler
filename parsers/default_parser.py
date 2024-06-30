@@ -1,10 +1,9 @@
 from bs4 import BeautifulSoup
 import re
 
-class CleanTextParser:
+class DefaultParser:
     def parse(self, content):
         if isinstance(content, BeautifulSoup):
-            # If content is already a BeautifulSoup object, use it directly
             soup = content
         else:
             # If content is a string, create a BeautifulSoup object

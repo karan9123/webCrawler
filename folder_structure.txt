@@ -1,0 +1,19 @@
+project_root/
+│
+├── main.py
+├── config.yaml
+├── folder_structure.txt
+├── config/
+│   ├── __init__.py
+│   └── config_manager.py
+├── database/
+│   ├── __init__.py
+│   └── link_manager.py
+├── scraper/
+│   ├── __init__.py
+│   ├── scraper.py
+│   └── robots_handler.py
+└── parsers/
+    ├── __init__.py
+    ├── parser_manager.py
+    └── default_parser.py

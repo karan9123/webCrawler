@@ -1,5 +1,5 @@
 from neo4j import GraphDatabase
-from config_manager import ConfigManager
+from config.config_manager import ConfigManager
 from urllib.parse import urlparse
 from datetime import datetime
 import logging
