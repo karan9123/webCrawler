@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from neo4j.time import DateTime
 from scraper.robots_handler import RobotsHandler
 from parsers.parser_manager import ParserManager
+from playwright.async_api import async_playwright
 
 class Scraper:
     def __init__(self, link_manager, config_manager):
@@ -22,15 +23,28 @@ class Scraper:
         }
         self.robots_handler = RobotsHandler(self.headers)
         self.parser_manager = ParserManager()
+        self.browser = None
+        self.context = None
+
+    async def initialize(self):
+        playwright = await async_playwright().start()
+        self.browser = await playwright.chromium.launch()
+        self.context = await self.browser.new_context()
+
+    async def close(self):
+        if self.context:
+            await self.context.close()
+        if self.browser:
+            await self.browser.close()
 
     async def scrape_website(self, url):
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=self.headers, timeout=10) as response:
-                    response.raise_for_status()
-                    content = await response.text()
-                    return BeautifulSoup(content, 'html.parser')
-        except aiohttp.ClientError as e:
+            page = await self.context.new_page()
+            await page.goto(url, wait_until='networkidle')
+            content = await page.content()
+            await page.close()
+            return BeautifulSoup(content, 'html.parser')
+        except Exception as e:
             print(f"Error scraping {url}: {str(e)}")
             return None
 
@@ -70,7 +84,6 @@ class Scraper:
         if last_crawl_info['last_modified'] is None:
             return True
 
-
         last_checked = last_crawl_info['last_checked']
         if isinstance(last_checked, DateTime):
             last_checked = last_checked.to_native()
@@ -90,23 +103,28 @@ class Scraper:
         to_visit = asyncio.Queue()
         await to_visit.put(start_url)
 
-        while not to_visit.empty() and len(visited) < max_pages:
-            url = await to_visit.get()
-            if url not in visited and await self.robots_handler.is_allowed(url) and await self.should_crawl(url):
-                print(f"Crawling: {url}")
-                soup = await self.scrape_website(url)
-                if soup:
-                    content_hash = self.get_content_hash(str(soup))
-                    if not self.link_manager.content_exists(content_hash):
-                        self.link_manager.add_or_update_link(url, content_hash=content_hash, last_modified=datetime.now())
-                        internal, external, resources = await self.discover_links(url, soup)
-                        visited.add(url)
-                        for link in internal:
-                            self.link_manager.add_or_update_link(link)
-                            if link not in visited:
-                                await to_visit.put(link)
-                        
-                        parsed_data = self.parser_manager.parse_content(soup)
-                        print(f"{url} -----> {parsed_data} <------")
+        await self.initialize()
+
+        try:
+            while not to_visit.empty() and len(visited) < max_pages:
+                url = await to_visit.get()
+                if url not in visited and await self.robots_handler.is_allowed(url) and await self.should_crawl(url):
+                    print(f"Crawling: {url}")
+                    soup = await self.scrape_website(url)
+                    if soup:
+                        content_hash = self.get_content_hash(str(soup))
+                        if not self.link_manager.content_exists(content_hash):
+                            self.link_manager.add_or_update_link(url, content_hash=content_hash, last_modified=datetime.now())
+                            internal, external, resources = await self.discover_links(url, soup)
+                            visited.add(url)
+                            for link in internal:
+                                self.link_manager.add_or_update_link(link)
+                                if link not in visited:
+                                    await to_visit.put(link)
+                            
+                            parsed_data = self.parser_manager.parse_content(soup)
+                            print(f"{url} -----> {parsed_data} <------")
+        finally:
+            await self.close()
 
         return visited
